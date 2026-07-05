@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,minimum-scale=1.0,user-scalable=no,viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="열려라창고">
+<meta name="theme-color" content="#0F172A">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <title>열려라창고 반포점</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
@@ -348,12 +354,20 @@ button{cursor:pointer;}
   <div class="tab" id="tab-settings">
     <div class="card" style="background:#F1F5F9;">
       <div style="font-size:11px;color:#64748B;">현재 버전</div>
-      <div style="font-size:14px;font-weight:800;">2026-07-04 09:40 · 회원명 탭 전환 방식 수정</div>
+      <div style="font-size:14px;font-weight:800;">2026-07-05 · 서비스워커 등록(진짜 앱 설치 지원)</div>
     </div>
     <div class="card">
       <div style="font-size:15px;font-weight:800;margin-bottom:4px;">☎️ 지점 연락처</div>
       <div style="font-size:12px;color:#94A3B8;margin-bottom:12px;">안내 문자에 자동으로 들어가요</div>
       <input class="inp" id="branch-phone" placeholder="02-000-0000" oninput="saveBranchPhone(this.value)">
+    </div>
+    <div class="card">
+      <div style="font-size:15px;font-weight:800;margin-bottom:4px;">🔄 매출 자동 동기화</div>
+      <div style="font-size:12px;color:#94A3B8;margin-bottom:12px;">서버에서 자동 감지·승인된 매출을 이 앱으로 가져와요</div>
+      <div class="fgroup"><div class="flabel">서버 주소</div><input class="inp" id="sync-url" placeholder="https://xxx.onrender.com" oninput="saveSyncConfig()"></div>
+      <div class="fgroup"><div class="flabel">동기화 키</div><input class="inp" id="sync-key" placeholder="서버에 설정한 SYNC_KEY" oninput="saveSyncConfig()"></div>
+      <button class="btn btn-blue btn-full" onclick="syncConfirmedSales(true)">🔄 지금 동기화</button>
+      <div id="sync-status" style="font-size:12px;color:#94A3B8;margin-top:8px;"></div>
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
@@ -1904,6 +1918,7 @@ function updBadge() {
 function rSettings() {
   rFixedCostList();
   document.getElementById('branch-phone').value = getBranchPhone();
+  loadSyncConfigInputs();
   const cur=localStorage.getItem('unitDefFilter')||'all';
   const opts=[
     {k:'all',  label:'전체',  desc:'모든 유닛을 한번에 봅니다',       icon:'📋'},
@@ -2231,6 +2246,59 @@ function sendSMS() {
 // 안내 문자 템플릿
 // ═══════════════════════════════════════════════════
 function saveBranchPhone(v) { localStorage.setItem('branchPhone', v); }
+
+// ═══════════════════════════════════════════════════
+// 서버 자동 매출 동기화
+// ═══════════════════════════════════════════════════
+function saveSyncConfig() {
+  localStorage.setItem('syncUrl', document.getElementById('sync-url').value.trim());
+  localStorage.setItem('syncKey', document.getElementById('sync-key').value.trim());
+}
+function loadSyncConfigInputs() {
+  const u=document.getElementById('sync-url'), k=document.getElementById('sync-key');
+  if(u) u.value = localStorage.getItem('syncUrl')||'';
+  if(k) k.value = localStorage.getItem('syncKey')||'';
+  const statusEl=document.getElementById('sync-status');
+  const last=localStorage.getItem('syncSince');
+  if(statusEl && last) statusEl.textContent = `마지막 동기화: ${new Date(last).toLocaleString('ko-KR')}`;
+}
+async function syncConfirmedSales(manual) {
+  const url = localStorage.getItem('syncUrl');
+  const key = localStorage.getItem('syncKey');
+  const statusEl = document.getElementById('sync-status');
+  if(!url || !key){ if(manual) toast('서버 주소와 동기화 키를 먼저 입력해주세요', true); return; }
+  const since = localStorage.getItem('syncSince') || '2000-01-01T00:00:00.000Z';
+  try {
+    if(statusEl) statusEl.textContent = '동기화 중...';
+    const res = await fetch(`${url.replace(/\/$/,'')}/api/confirmed?key=${encodeURIComponent(key)}&since=${encodeURIComponent(since)}`);
+    if(!res.ok) throw new Error('서버 응답 오류('+res.status+')');
+    const items = await res.json();
+    let added = 0;
+    items.forEach(item=>{
+      if(C.some(c=>c._cafe24No===item.no)) return; // 중복 방지
+      let mb = M.find(m=>m.name===item.name);
+      if(!mb){ mb={id:genId(), name:item.name, phone:'', memo:'cafe24 자동등록 (연락처 확인 필요)'}; M.push(mb); }
+      const unitInfo = UNITS.find(u=>u.id===item.unit);
+      const utype = unitInfo ? unitInfo.type : (item.unit[0]||'S');
+      const pr = PRICING.find(p=>p.days===item.periodDays);
+      const endDate = pr ? calcEndDate(item.orderDate, pr) : addDays(item.orderDate, (item.periodDays||30)-1);
+      C.push({
+        id:genId(), memberId:mb.id, unitId:item.unit, unitType:utype,
+        startDate:item.orderDate, endDate, days:item.periodDays||30, isCustom:!pr,
+        paidAmount:item.amount, paidDate:item.orderDate, payMethod:'card',
+        _cafe24No:item.no,
+      });
+      added++;
+    });
+    if(added){ saveM(); saveC(); rAll(); }
+    localStorage.setItem('syncSince', new Date().toISOString());
+    if(statusEl) statusEl.textContent = `마지막 동기화: ${new Date().toLocaleString('ko-KR')} · 이번에 ${added}건 추가`;
+    if(manual) toast(added>0 ? `${added}건의 매출을 가져왔어요!` : '새로 가져올 매출이 없어요');
+  } catch(e) {
+    if(statusEl) statusEl.textContent = '동기화 실패: '+e.message;
+    if(manual) toast('동기화에 실패했어요: '+e.message, true);
+  }
+}
 function getBranchPhone() { return localStorage.getItem('branchPhone') || ''; }
 
 function buildSmsBody(type, mb, c) {
@@ -3084,6 +3152,10 @@ window.addEventListener('popstate', function() {
 });
 
 window.addEventListener('load', function() {
+  // PWA 설치 조건 충족을 위한 서비스워커 등록
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('./sw.js').catch(function(e){ console.log('SW 등록 실패:', e); });
+  }
   loadAll();
   // 수익 기간 초기화
   const now=new Date();
@@ -3102,6 +3174,7 @@ window.addEventListener('load', function() {
     if(btn) goTab(savedTab, btn);
   }
   document.getElementById('ld').classList.remove('on');
+  syncConfirmedSales(false); // 조용히 자동 동기화 시도 (설정 안 돼있으면 그냥 무시됨)
 });
 
 // ─── 화면 확대 고정 방지: 줌이 풀리지 않는 안드로이드 버그 우회 ───
