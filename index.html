@@ -3118,8 +3118,8 @@ function closeOV(id){
         const pel=document.getElementById(prev);
         if(pel) pel.classList.add('on');
       }
-    } finally { _reopening=false; }
-    unlockIfFree(); // 복귀 실패(데이터 없음) 시 잠금 해제
+    } catch(e){ DLOG('복귀 실패', prev, e); } // 복귀 중 오류가 나도 아래 잠금해제는 반드시 실행
+    finally { _reopening=false; unlockIfFree(); } // 오류/복귀실패 시에도 배경 스크롤 잠금 해제 (화면 먹통 방지)
   },0);
 }
 
@@ -5144,6 +5144,7 @@ document.addEventListener('click', function(e) {
 // ═══════════════════════════════════════════════════
 function openMemberDetail(id) {
   selMember=M.find(m=>m.id===id);
+  if(!selMember){ closeOV('ov-member'); return; } // 삭제/없는 회원이면 조용히 닫기 (먹통 방지)
   const m=selMember;
   document.getElementById('md-name').textContent=m.name;
   document.getElementById('md-phone').textContent=m.phone;
@@ -5273,6 +5274,7 @@ function confirmDelMember() {
   if(!confirm(`${selMember.name} 회원을 삭제할까요?\n관련 계약도 모두 삭제됩니다.`))return;
   M=M.filter(m=>m.id!==selMember.id);
   C=C.filter(c=>c.memberId!==selMember.id);
+  selMember=null; selContract=null; // 삭제된 회원/계약 참조 제거 (복귀 로직 먹통 방지)
   saveM(); saveC(); closeOV('ov-member'); rAll(); toast('삭제되었습니다.');
 }
 
@@ -5281,6 +5283,7 @@ function confirmDelMember() {
 // ═══════════════════════════════════════════════════
 function openContractDetail(id) {
   selContract=C.find(c=>c.id===id);
+  if(!selContract){ closeOV('ov-cd'); return; } // 삭제/없는 계약이면 조용히 닫기 (먹통 방지)
   const c=selContract;
   const mb=M.find(m=>m.id===c.memberId);
   const u=UNITS.find(x=>x.id===c.unitId);
@@ -5696,6 +5699,7 @@ function selectCEUnit(id, type) {
 function confirmDelContract() {
   if(!confirm('계약을 삭제할까요?'))return;
   C=C.filter(c=>c.id!==selContract.id);
+  selContract=null; // 삭제된 계약 참조 제거 (복귀 로직이 사라진 계약을 다시 열다 먹통되는 것 방지)
   saveC(); closeOV('ov-cd'); rAll(); toast('삭제되었습니다.');
 }
 
@@ -7271,7 +7275,7 @@ window.addEventListener('popstate', function() {
   }, {passive:true});
 })();
 
-const APP_BUILD = 'v1018.004'; // vMMDD.NNN — 10/18 · 신규매출 자동등록에 휴대폰(공간관리) 자동입력 추가
+const APP_BUILD = 'v1018.005'; // vMMDD.NNN — 10/18 · 신규매출 자동등록에 휴대폰(공간관리) 자동입력 추가
 window.addEventListener('load', function() {
   // 빌드 버전 표시 (캐시 문제 진단용)
   try {
