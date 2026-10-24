@@ -4622,7 +4622,7 @@ function updBadge() {
 // 신규 매출 승인 대기 (서버 자동감지 연동)
 // ═══════════════════════════════════════════════════
 let pendingSalesCache = [];
-let processedSalesCache = []; // 등록/닫기 처리된 매출 누적 내역
+let notifLogCache = []; // 알림 내역(전체: 미등록/등록됨/닫음) — 최신순
 
 function _pdDays(t){ const m=String(t||'').match(/\d+/); return m? +m[0] : 30; }
 function _pdAmt(t){ return +String(t||'').replace(/[^0-9]/g,'') || 0; }
@@ -4633,7 +4633,7 @@ function _mapPending(r){ return { no:r.no, name:r.name||'', unit:r.unit||'', per
 let _pendPrevCount = 0;
 
 async function fetchPendingSales() {
-  if(!SB || !myUsername){ pendingSalesCache=[]; processedSalesCache=[]; rPendingSalesUI(); updBadge(); return; }
+  if(!SB || !myUsername){ pendingSalesCache=[]; notifLogCache=[]; rPendingSalesUI(); updBadge(); return; }
   try {
     const { data, error } = await SB.from('pending_sales').select('*').eq('state','pending').order('no',{ascending:true});
     if(error) throw error;
@@ -4644,17 +4644,27 @@ async function fetchPendingSales() {
       if(_pendPrevCount>0) toast(`🆕 새 매출 ${add}건 도착 — 알림 탭에서 확인`);
     }
     _pendPrevCount = pendingSalesCache.length;
-    // 처리 내역(등록/닫기) 누적 — 최근 30건 (최근 처리 순)
+    // 알림 내역(전체: 미등록/등록됨/닫음) — 최신순 최근 50건
     try{
-      const { data: hist } = await SB.from('pending_sales').select('*').neq('state','pending')
-        .order('processed_at',{ascending:false,nullsFirst:false}).order('no',{ascending:false}).limit(30);
-      processedSalesCache = (hist||[]).map(r=>({ ..._mapPending(r), state:r.state, processedAt:r.processed_at||null }));
-    }catch(_){ /* 처리내역 조회 실패시 기존 유지 */ }
+      const { data: all } = await SB.from('pending_sales').select('*')
+        .order('created_at',{ascending:false,nullsFirst:false}).order('no',{ascending:false}).limit(50);
+      notifLogCache = (all||[]).map(r=>({ ..._mapPending(r), state:(r.state||'pending'), processedAt:r.processed_at||null, createdAt:r.created_at||null }));
+    }catch(_){ /* 알림내역 조회 실패시 기존 유지 */ }
   } catch(e) { /* 네트워크 오류시 기존 캐시 유지 */ }
   rPendingSalesUI(); updBadge();
   // 모달이 열려있으면 내용 갱신
   const ovp = document.getElementById('ov-pending');
   if(ovp && ovp.classList.contains('on')) pendingModalRender();
+}
+// 대기/알림내역 어느 쪽에서든 해당 매출 찾기
+function _findSale(no){ return pendingSalesCache.find(x=>String(x.no)===String(no)) || notifLogCache.find(x=>String(x.no)===String(no)); }
+function _notifLogOpen(){ try{ return localStorage.getItem('notifLogOpen')!=='0'; }catch(_){ return true; } }
+function toggleNotifLog(){ try{ localStorage.setItem('notifLogOpen', _notifLogOpen()?'0':'1'); }catch(_){} rPendingSalesUI(); }
+// 등록된 매출 → 연결된 계약 상세로
+function openContractForSale(no){
+  const c = C.find(x=>String(x._cafe24No)===String(no));
+  if(c){ openContractDetail(c.id); }
+  else { toast('연결된 계약을 찾을 수 없어요 (삭제됐을 수 있어요)', true); }
 }
 
 function rPendingSalesUI() {
@@ -4689,32 +4699,46 @@ function rPendingSalesUI() {
   } else {
     html += `<div class="card" style="text-align:center;color:#94A3B8;font-size:13px;">✅ 처리할 신규매출이 없어요</div>`;
   }
-  // ── ② 처리 내역(누적) — 등록됐는지 여부까지 ──
-  if(processedSalesCache.length){
+  // ── ② 알림 내역 (전체: 미등록/등록됨/닫음 · 접기 가능) ──
+  if(notifLogCache.length){
+    const open = _notifLogOpen();
     html += `
     <div class="card" style="margin-top:10px;">
-      <div style="font-size:13px;font-weight:800;color:#475569;margin-bottom:8px;">📜 매출 처리 내역 (최근 ${processedSalesCache.length}건)</div>
-      ${processedSalesCache.map(item=>{
-        const reg = item.state==='registered';
-        const badge = reg
-          ? `<span style="font-size:11px;font-weight:800;color:#059669;background:#ECFDF5;border-radius:6px;padding:2px 8px;white-space:nowrap;">✅ 등록됨</span>`
-          : `<span style="font-size:11px;font-weight:800;color:#64748B;background:#F1F5F9;border-radius:6px;padding:2px 8px;white-space:nowrap;">🚫 닫음</span>`;
-        const when = _fmtProcessed(item.processedAt);
-        return `
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 2px;border-bottom:1px solid #F1F5F9;">
-          <div style="min-width:0;flex:1;">
-            <div style="font-size:13px;font-weight:700;">${item.name} <span style="font-size:12px;color:#2563EB;">${item.unit}</span> <span style="font-size:11px;color:#94A3B8;font-weight:600;">${(item.amount||0).toLocaleString()}원</span></div>
-            <div style="font-size:11px;color:#94A3B8;margin-top:1px;">${item.periodText}${when?` · ${when} 처리`:''}</div>
-          </div>
-          <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;">
-            ${badge}
-            ${(canEdit() && !reg) ? `<button class="btn" style="background:#EFF6FF;color:#2563EB;font-size:11px;padding:3px 9px;" onclick="reopenPendingSale('${item.no}')">되돌리기</button>`:''}
-          </div>
-        </div>`;
-      }).join('')}
+      <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;" onclick="toggleNotifLog()">
+        <div style="font-size:14px;font-weight:800;color:#334155;">📬 알림 내역 <span style="font-size:12px;color:#94A3B8;font-weight:700;">(${notifLogCache.length})</span></div>
+        <div style="font-size:12px;color:#64748B;font-weight:700;">${open?'접기 ▲':'펼치기 ▼'}</div>
+      </div>
+      ${open ? `<div style="margin-top:8px;">${notifLogCache.map(_notifRow).join('')}</div>` : ''}
     </div>`;
   }
   el.innerHTML = html;
+}
+
+// 알림 내역 한 줄 렌더
+function _notifRow(item){
+  const st = item.state;
+  let badge;
+  if(st==='registered')   badge = `<span style="font-size:11px;font-weight:800;color:#059669;background:#ECFDF5;border-radius:6px;padding:2px 8px;white-space:nowrap;">✅ 등록됨</span>`;
+  else if(st==='closed')  badge = `<span style="font-size:11px;font-weight:800;color:#64748B;background:#F1F5F9;border-radius:6px;padding:2px 8px;white-space:nowrap;">🚫 닫음</span>`;
+  else                    badge = `<span style="font-size:11px;font-weight:800;color:#B45309;background:#FEF3C7;border-radius:6px;padding:2px 8px;white-space:nowrap;">🕒 미등록</span>`;
+  const reg = st==='registered';
+  const canReg = canEdit() && !reg; // 미등록·닫음 → 나중에 바로 등록 가능
+  const action = canReg ? `<button class="btn btn-blue" style="font-size:11px;padding:3px 10px;" onclick="event.stopPropagation();registerPendingSale('${item.no}')">등록</button>` : '';
+  const when = reg
+    ? (_fmtProcessed(item.processedAt) ? `${_fmtProcessed(item.processedAt)} 등록` : '')
+    : (st==='closed' ? (_fmtProcessed(item.processedAt) ? `${_fmtProcessed(item.processedAt)} 닫음` : '')
+                     : (item.orderDate ? `주문 ${item.orderDate}` : ''));
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 2px;border-bottom:1px solid #F1F5F9;${reg?'cursor:pointer;':''}" ${reg?`onclick="openContractForSale('${item.no}')"`:''}>
+      <div style="min-width:0;flex:1;">
+        <div style="font-size:13px;font-weight:700;">${item.name} <span style="font-size:12px;color:#2563EB;">${item.unit}</span> <span style="font-size:11px;color:#94A3B8;font-weight:600;">${(item.amount||0).toLocaleString()}원</span>${reg?' <span style="font-size:12px;color:#CBD5E1;">›</span>':''}</div>
+        <div style="font-size:11px;color:#94A3B8;margin-top:1px;">${item.periodText}${when?` · ${when}`:''}</div>
+      </div>
+      <div style="flex-shrink:0;display:flex;align-items:center;gap:6px;">
+        ${badge}
+        ${action}
+      </div>
+    </div>`;
 }
 
 // ── 신규매출 → 계약 자동등록 (기존 cafe24 연동 매핑 재사용) ──
@@ -4789,7 +4813,7 @@ async function reopenPendingSale(no){
 }
 async function registerPendingSale(no){
   if(!canEdit()){ toast('게스트는 조회만 가능해요', true); return; }
-  const item = pendingSalesCache.find(x=>String(x.no)===String(no));
+  const item = _findSale(no);
   if(!item){ return; }
   const res = _buildContractFromPending(item);
   if(!res.ok){
@@ -4815,7 +4839,7 @@ async function registerPendingSale(no){
 }
 async function closePendingSale(no){
   if(!canEdit()){ toast('게스트는 조회만 가능해요', true); return; }
-  const item = pendingSalesCache.find(x=>String(x.no)===String(no));
+  const item = _findSale(no);
   await setPendingState(no, 'closed');
   toast('닫았어요');
   await fetchPendingSales();
@@ -7316,7 +7340,7 @@ window.addEventListener('popstate', function() {
   }, {passive:true});
 })();
 
-const APP_BUILD = 'v1024.001'; // vMMDD.NNN — 10/18 · 신규매출 자동등록에 휴대폰(공간관리) 자동입력 추가
+const APP_BUILD = 'v1024.002'; // vMMDD.NNN — 10/18 · 신규매출 자동등록에 휴대폰(공간관리) 자동입력 추가
 window.addEventListener('load', function() {
   // 빌드 버전 표시 (캐시 문제 진단용)
   try {
